@@ -1,0 +1,17 @@
+# ESP-IDF build output
+build/
+
+# Generated config (derived from sdkconfig.defaults — do not commit)
+sdkconfig
+sdkconfig.old
+
+# Managed components (fetched by idf.py update-dependencies)
+managed_components/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+*.swp
