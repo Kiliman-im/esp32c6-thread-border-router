@@ -16,6 +16,9 @@
 #include <string.h>
 
 #include "sdkconfig.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_check.h"
 #include "esp_coexist.h"
 #include "esp_err.h"
@@ -25,6 +28,7 @@
 #include "esp_openthread.h"
 #include "esp_openthread_lock.h"
 #include "esp_openthread_netif_glue.h"
+#include "openthread/thread.h"
 #include "esp_openthread_spinel.h"
 #include "esp_openthread_types.h"
 #if CONFIG_OPENTHREAD_CLI_ESP_EXTENSION
@@ -48,6 +52,52 @@
 
 #define TAG "esp_ot_br"
 
+/* XIAO ESP32-C6 user LED — GPIO15, active-low */
+#define USER_LED_GPIO 15
+
+static void led_init(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = BIT64(USER_LED_GPIO),
+        .mode         = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+
+    /* 3 quick blinks at boot */
+    for (int i = 0; i < 3; i++) {
+        gpio_set_level(USER_LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(150));
+        gpio_set_level(USER_LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+}
+
+static void led_task(void *arg)
+{
+    bool blink_state = false;
+    while (1) {
+        otDeviceRole role = OT_DEVICE_ROLE_DISABLED;
+        otInstance *instance = esp_openthread_get_instance();
+        if (instance) {
+            esp_openthread_lock_acquire(portMAX_DELAY);
+            role = otThreadGetDeviceRole(instance);
+            esp_openthread_lock_release();
+        }
+
+        if (role == OT_DEVICE_ROLE_ROUTER || role == OT_DEVICE_ROLE_LEADER) {
+            gpio_set_level(USER_LED_GPIO, 0); /* solid on */
+            vTaskDelay(pdMS_TO_TICKS(500));
+        } else {
+            blink_state = !blink_state;
+            gpio_set_level(USER_LED_GPIO, blink_state ? 0 : 1);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+    }
+}
+
 #if CONFIG_OPENTHREAD_SUPPORT_HW_RESET_RCP
 #define PIN_TO_RCP_RESET CONFIG_OPENTHREAD_HW_RESET_RCP_PIN
 static void rcp_failure_hardware_reset_handler(void)
@@ -70,6 +120,8 @@ static void rcp_failure_hardware_reset_handler(void)
 
 void app_main(void)
 {
+    led_init();
+
     // Used eventfds:
     // * netif
     // * task queue
@@ -122,6 +174,7 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(esp_openthread_start(&config));
+    xTaskCreate(led_task, "led", 2048, NULL, 2, NULL);
 #if CONFIG_OPENTHREAD_CLI_ESP_EXTENSION
     esp_cli_custom_command_init();
 #endif
