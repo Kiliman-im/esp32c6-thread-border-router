@@ -23,6 +23,7 @@
 #include "esp_coexist.h"
 #include "esp_err.h"
 #include "esp_event.h"
+#include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_openthread.h"
@@ -39,6 +40,7 @@
 #include "esp_vfs_eventfd.h"
 #include "mdns.h"
 #include "nvs_flash.h"
+#include "openthread/dataset.h"
 #include "ot_examples_br.h"
 #include "ot_examples_common.h"
 
@@ -96,6 +98,100 @@ static void led_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
+}
+
+static esp_err_t get_active_dataset_hex(char *buffer, size_t buffer_size)
+{
+    otOperationalDatasetTlvs dataset;
+
+    esp_openthread_lock_acquire(portMAX_DELAY);
+    otInstance *instance = esp_openthread_get_instance();
+    otError error = instance == NULL ? OT_ERROR_INVALID_STATE : otDatasetGetActiveTlvs(instance, &dataset);
+    esp_openthread_lock_release();
+
+    if (error != OT_ERROR_NONE) {
+        return ESP_FAIL;
+    }
+
+    if (buffer_size < (size_t)dataset.mLength * 2 + 1) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (uint8_t index = 0; index < dataset.mLength; index++) {
+        snprintf(buffer + index * 2, buffer_size - index * 2, "%02x", dataset.mTlvs[index]);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t node_handler(httpd_req_t *request)
+{
+    esp_openthread_lock_acquire(portMAX_DELAY);
+    otInstance *instance = esp_openthread_get_instance();
+    otDeviceRole role = instance == NULL ? OT_DEVICE_ROLE_DISABLED : otThreadGetDeviceRole(instance);
+    esp_openthread_lock_release();
+
+    char response[16];
+    int state = role >= OT_DEVICE_ROLE_CHILD ? 4 : 1;
+    snprintf(response, sizeof(response), "{\"State\":%d}", state);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
+static esp_err_t active_dataset_handler(httpd_req_t *request)
+{
+    char dataset_hex[OT_OPERATIONAL_DATASET_MAX_LENGTH * 2 + 1];
+    if (get_active_dataset_hex(dataset_hex, sizeof(dataset_hex)) != ESP_OK) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No active dataset");
+        return ESP_FAIL;
+    }
+
+    char response[OT_OPERATIONAL_DATASET_MAX_LENGTH * 2 + 32];
+    snprintf(response, sizeof(response), "{\"ActiveDataset\":\"%s\"}", dataset_hex);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, response);
+}
+
+static esp_err_t dataset_handler(httpd_req_t *request)
+{
+    char dataset_hex[OT_OPERATIONAL_DATASET_MAX_LENGTH * 2 + 1];
+    if (get_active_dataset_hex(dataset_hex, sizeof(dataset_hex)) != ESP_OK) {
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "No active dataset");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(request, "text/plain");
+    return httpd_resp_sendstr(request, dataset_hex);
+}
+
+static void start_rest_server(void)
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 8081;
+
+    httpd_handle_t server = NULL;
+    ESP_ERROR_CHECK(httpd_start(&server, &config));
+
+    static const httpd_uri_t node_uri = {
+        .uri = "/node",
+        .method = HTTP_GET,
+        .handler = node_handler,
+    };
+    static const httpd_uri_t active_dataset_uri = {
+        .uri = "/networks/dataset/active",
+        .method = HTTP_GET,
+        .handler = active_dataset_handler,
+    };
+    static const httpd_uri_t dataset_uri = {
+        .uri = "/dataset",
+        .method = HTTP_GET,
+        .handler = dataset_handler,
+    };
+
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &node_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &active_dataset_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &dataset_uri));
+    ESP_LOGI(TAG, "REST API started on port %d", config.server_port);
 }
 
 #if CONFIG_OPENTHREAD_SUPPORT_HW_RESET_RCP
@@ -174,6 +270,7 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(esp_openthread_start(&config));
+    start_rest_server();
     xTaskCreate(led_task, "led", 2048, NULL, 2, NULL);
 #if CONFIG_OPENTHREAD_CLI_ESP_EXTENSION
     esp_cli_custom_command_init();

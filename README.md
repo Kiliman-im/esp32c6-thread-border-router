@@ -110,6 +110,25 @@ avahi-browse -t _meshcop._udp
 
 The device will appear in **Home Assistant → Settings → Devices & Services → Thread** automatically.
 
+## REST API
+
+The border router exposes a read-only OTBR-compatible REST API on port `8081` over its Wi-Fi connection:
+
+| Endpoint | Response |
+|---|---|
+| `GET /node` | Thread readiness state (`{"State":4}` after attachment) |
+| `GET /networks/dataset/active` | Active Thread dataset as `{"ActiveDataset":"..."}` |
+| `GET /dataset` | Active Thread dataset as raw hexadecimal TLVs |
+
+For example, replace the address with the border router's Wi-Fi IPv4 address:
+
+```bash
+curl http://192.168.1.50:8081/node
+curl http://192.168.1.50:8081/networks/dataset/active
+```
+
+This REST API is requested while using the HA companion app as commissioner for new devices to the thread network.
+
 ## Useful Console Commands
 
 ```
